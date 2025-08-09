@@ -32,6 +32,14 @@ The following are some demos (best view in the full screen mode).
 
 ### PyTorch Inference
 
+Before running the following commands, make sure that **ffmpeg** and the Python binding
+`ffmpeg-python` are installed on your system. On Ubuntu you can install them with:
+
+```bash
+sudo apt-get install ffmpeg
+pip install ffmpeg-python
+```
+
 ```bash
 # download model
 wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth -P weights

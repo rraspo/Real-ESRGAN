@@ -7,3 +7,4 @@ Pillow
 torch>=2.1
 torchvision>=0.16
 tqdm
+ffmpeg-python>=0.2

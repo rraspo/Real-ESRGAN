@@ -17,6 +17,7 @@ from tqdm import tqdm
 from realesrgan import RealESRGANer, get_free_gpu_memory
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
+
 try:
     import ffmpeg
 except ImportError:
