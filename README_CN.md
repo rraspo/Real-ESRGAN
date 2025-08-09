@@ -184,6 +184,8 @@ Usage: realesrgan-ncnn-vulkan.exe -i infile -o outfile [options]...
     # facexlib和gfpgan是用来增强人脸的
     pip install facexlib
     pip install gfpgan
+    # 预先安装 ffmpeg 及其 Python 绑定 (ffmpeg-python)
+    # 例如在 Ubuntu: sudo apt-get install ffmpeg
     pip install -r requirements.txt
     python setup.py develop
     ```
@@ -227,6 +229,7 @@ python inference_realesrgan.py -n RealESRGAN_x4plus_anime_6B -i inputs
 ### Python 脚本的用法
 
 1. 虽然你使用了 X4 模型，但是你可以 **输出任意尺寸比例的图片**，只要实用了 `outscale` 参数. 程序会进一步对模型的输出图像进行缩放。
+2. 若未指定 `--tile`，程序会根据显存自动选择合适的分块大小。你也可以通过显式设置 `--tile`（或 `--tile 0` 以关闭分块）来覆盖此行为。
 
 ```console
 Usage: python inference_realesrgan.py -n RealESRGAN_x4plus -i infile -o outfile [options]...
@@ -239,7 +242,7 @@ A common command: python inference_realesrgan.py -n RealESRGAN_x4plus -i infile 
   -n --model_name      Model name. Default: RealESRGAN_x4plus
   -s, --outscale       The final upsampling scale of the image. Default: 4
   --suffix             Suffix of the restored image. Default: out
-  -t, --tile           Tile size, 0 for no tile during testing. Default: 0
+  -t, --tile           图像分块大小。默认根据可用显存自动确定，设置为0表示不分块
   --face_enhance       Whether to use GFPGAN to enhance face. Default: False
   --fp32               Whether to use half precision during inference. Default: False
   --ext                Image extension. Options: auto | jpg | png, auto means using the same extension as inputs. Default: auto
