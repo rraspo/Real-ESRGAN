@@ -23,7 +23,8 @@ class RealESRGANer():
             0 denotes for do not use tile. Default: 0.
         tile_pad (int): The pad size for each tile, to remove border artifacts. Default: 10.
         pre_pad (int): Pad the input images to avoid border artifacts. Default: 10.
-        half (float): Whether to use half precision during inference. Default: False.
+        half (bool): Whether to use half precision during inference. Default: False.
+        bf16 (bool): Whether to use bfloat16 precision during inference. Default: False.
     """
 
     def __init__(self,
@@ -35,6 +36,7 @@ class RealESRGANer():
                  tile_pad=10,
                  pre_pad=10,
                  half=False,
+                 bf16=False,
                  device=None,
                  gpu_id=None):
         self.scale = scale
@@ -43,6 +45,7 @@ class RealESRGANer():
         self.pre_pad = pre_pad
         self.mod_scale = None
         self.half = half
+        self.bf16 = bf16
 
         # initialize model
         if gpu_id:
@@ -73,6 +76,8 @@ class RealESRGANer():
         self.model = model.to(self.device)
         if self.half:
             self.model = self.model.half()
+        elif self.bf16:
+            self.model = self.model.to(torch.bfloat16)
 
     def dni(self, net_a, net_b, dni_weight, key='params', loc='cpu'):
         """Deep network interpolation.
@@ -92,6 +97,8 @@ class RealESRGANer():
         self.img = img.unsqueeze(0).to(self.device)
         if self.half:
             self.img = self.img.half()
+        elif self.bf16:
+            self.img = self.img.to(torch.bfloat16)
 
         # pre_pad
         if self.pre_pad != 0:
