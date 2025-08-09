@@ -15,12 +15,7 @@ from tqdm import tqdm
 from realesrgan import RealESRGANer
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
-try:
-    import ffmpeg
-except ImportError:
-    import pip
-    pip.main(['install', '--user', 'ffmpeg-python'])
-    import ffmpeg
+import ffmpeg
 
 
 def get_video_meta_info(video_path):

@@ -107,6 +107,8 @@ Other recommended projects:<br>
     # facexlib and gfpgan are for face enhancement
     pip install facexlib
     pip install gfpgan
+    # Install ffmpeg and the Python binding (ffmpeg-python) beforehand
+    # e.g., on Ubuntu: sudo apt-get install ffmpeg
     pip install -r requirements.txt
     python setup.py develop
     ```

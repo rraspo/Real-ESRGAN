@@ -184,6 +184,8 @@ Usage: realesrgan-ncnn-vulkan.exe -i infile -o outfile [options]...
     # facexlib和gfpgan是用来增强人脸的
     pip install facexlib
     pip install gfpgan
+    # 预先安装 ffmpeg 及其 Python 绑定 (ffmpeg-python)
+    # 例如在 Ubuntu: sudo apt-get install ffmpeg
     pip install -r requirements.txt
     python setup.py develop
     ```
