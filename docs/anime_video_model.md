@@ -58,6 +58,9 @@ Usage:
                          this issue, you can use multi-processing by setting this parameter. As long as it
                          does not exceed the CUDA memory
 --extract_frame_first    If you encounter ffmpeg error when using multi-processing, you can turn this option on.
+--model_path             [Option] Model path. Usually, you do not need to specify it.
+--alpha_upsampler        The upsampler for the alpha channels. Options: realesrgan | bicubic.
+--bf16                   Use bfloat16 precision during inference. Default: fp16 (half precision).
 ```
 
 ### NCNN Executable File

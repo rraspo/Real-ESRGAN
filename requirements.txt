@@ -1,10 +1,10 @@
 basicsr>=1.4.2
-facexlib>=0.2.5
-gfpgan>=1.3.5
+facexlib>=0.3.0
+gfpgan>=1.3.8
 numpy
 opencv-python
 Pillow
-torch>=1.7
-torchvision
+torch>=2.1
+torchvision>=0.16
 tqdm
 ffmpeg-python>=0.2

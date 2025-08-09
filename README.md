@@ -87,7 +87,8 @@ Other recommended projects:<br>
 ## 🔧 Dependencies and Installation
 
 - Python >= 3.7 (Recommend to use [Anaconda](https://www.anaconda.com/download/#linux) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html))
-- [PyTorch >= 1.7](https://pytorch.org/)
+- [PyTorch >= 2.1](https://pytorch.org/)
+- NVIDIA CUDA >= 12.0 runtime and drivers, or a compatible Vulkan runtime for the ncnn backend
 
 ### Installation
 
@@ -178,6 +179,7 @@ Note that it may introduce block inconsistency (and also generate slightly diffe
 #### Usage of python script
 
 1. You can use X4 model for **arbitrary output size** with the argument `outscale`. The program will further perform cheap resize operation after the Real-ESRGAN output.
+2. If `--tile` is not specified, a tile size that fits the available VRAM will be automatically chosen. Specify `--tile` (or `--tile 0` to disable tiling) to override this behaviour.
 
 ```console
 Usage: python inference_realesrgan.py -n RealESRGAN_x4plus -i infile -o outfile [options]...
@@ -190,7 +192,7 @@ A common command: python inference_realesrgan.py -n RealESRGAN_x4plus -i infile 
   -n --model_name      Model name. Default: RealESRGAN_x4plus
   -s, --outscale       The final upsampling scale of the image. Default: 4
   --suffix             Suffix of the restored image. Default: out
-  -t, --tile           Tile size, 0 for no tile during testing. Default: 0
+  -t, --tile           Tile size. Automatically determined from free VRAM when not set. Use 0 to disable tiling
   --face_enhance       Whether to use GFPGAN to enhance face. Default: False
   --fp32               Use fp32 precision during inference. Default: fp16 (half precision).
   --ext                Image extension. Options: auto | jpg | png, auto means using the same extension as inputs. Default: auto

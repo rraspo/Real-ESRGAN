@@ -11,6 +11,24 @@ from torch.nn import functional as F
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def get_free_gpu_memory(gpu_id=None):
+    """Get the free GPU memory in bytes.
+
+    Args:
+        gpu_id (int, optional): GPU device id. If None, the current device is
+            used.
+
+    Returns:
+        int: Free memory on the specified GPU in bytes. Returns 0 if CUDA is
+        not available.
+    """
+    if not torch.cuda.is_available():
+        return 0
+    device = torch.cuda.current_device() if gpu_id is None else gpu_id
+    free_mem, _ = torch.cuda.mem_get_info(device)
+    return free_mem
+
+
 class RealESRGANer():
     """A helper class for upsampling images with RealESRGAN.
 
@@ -23,7 +41,8 @@ class RealESRGANer():
             0 denotes for do not use tile. Default: 0.
         tile_pad (int): The pad size for each tile, to remove border artifacts. Default: 10.
         pre_pad (int): Pad the input images to avoid border artifacts. Default: 10.
-        half (float): Whether to use half precision during inference. Default: False.
+        half (bool): Whether to use half precision during inference. Default: False.
+        bf16 (bool): Whether to use bfloat16 precision during inference. Default: False.
     """
 
     def __init__(self,
@@ -35,6 +54,7 @@ class RealESRGANer():
                  tile_pad=10,
                  pre_pad=10,
                  half=False,
+                 bf16=False,
                  device=None,
                  gpu_id=None):
         self.scale = scale
@@ -43,6 +63,7 @@ class RealESRGANer():
         self.pre_pad = pre_pad
         self.mod_scale = None
         self.half = half
+        self.bf16 = bf16
 
         # initialize model
         if gpu_id:
@@ -73,6 +94,8 @@ class RealESRGANer():
         self.model = model.to(self.device)
         if self.half:
             self.model = self.model.half()
+        elif self.bf16:
+            self.model = self.model.to(torch.bfloat16)
 
     def dni(self, net_a, net_b, dni_weight, key='params', loc='cpu'):
         """Deep network interpolation.
@@ -92,6 +115,8 @@ class RealESRGANer():
         self.img = img.unsqueeze(0).to(self.device)
         if self.half:
             self.img = self.img.half()
+        elif self.bf16:
+            self.img = self.img.to(torch.bfloat16)
 
         # pre_pad
         if self.pre_pad != 0:
