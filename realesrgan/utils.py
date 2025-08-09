@@ -11,6 +11,24 @@ from torch.nn import functional as F
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def get_free_gpu_memory(gpu_id=None):
+    """Get the free GPU memory in bytes.
+
+    Args:
+        gpu_id (int, optional): GPU device id. If None, the current device is
+            used.
+
+    Returns:
+        int: Free memory on the specified GPU in bytes. Returns 0 if CUDA is
+        not available.
+    """
+    if not torch.cuda.is_available():
+        return 0
+    device = torch.cuda.current_device() if gpu_id is None else gpu_id
+    free_mem, _ = torch.cuda.mem_get_info(device)
+    return free_mem
+
+
 class RealESRGANer():
     """A helper class for upsampling images with RealESRGAN.
 
