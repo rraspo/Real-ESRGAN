@@ -228,6 +228,7 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         pre_pad=args.pre_pad,
         half=not args.fp32,
         device=device,
+        gpu_id=args.gpu_id,
     )
 
     if 'anime' in args.model_name and args.face_enhance:
@@ -269,7 +270,8 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         else:
             writer.write_frame(output)
 
-        torch.cuda.synchronize(device)
+        if args.debug and device is not None and device.type == 'cuda':
+            torch.cuda.synchronize(device)
         pbar.update(1)
 
     reader.close()
@@ -286,10 +288,17 @@ def run(args):
         os.system(f'ffmpeg -i {args.input} -qscale:v 1 -qmin 1 -qmax 1 -vsync 0  {tmp_frames_folder}/frame%08d.png')
         args.input = tmp_frames_folder
 
-    num_gpus = torch.cuda.device_count()
+    if args.device:
+        device = torch.device(args.device)
+    elif args.gpu_id is not None:
+        device = torch.device(f'cuda:{args.gpu_id}')
+    else:
+        device = None
+
+    num_gpus = 1 if device is not None else torch.cuda.device_count()
     num_process = num_gpus * args.num_process_per_gpu
     if num_process == 1:
-        inference_video(args, video_save_path)
+        inference_video(args, video_save_path, device=device)
         return
 
     ctx = torch.multiprocessing.get_context('spawn')
@@ -298,9 +307,10 @@ def run(args):
     pbar = tqdm(total=num_process, unit='sub_video', desc='inference')
     for i in range(num_process):
         sub_video_save_path = osp.join(args.output, f'{args.video_name}_out_tmp_videos', f'{i:03d}.mp4')
+        sub_device = device if device is not None else torch.device(i % num_gpus)
         pool.apply_async(
             inference_video,
-            args=(args, sub_video_save_path, torch.device(i % num_gpus), num_process, i),
+            args=(args, sub_video_save_path, sub_device, num_process, i),
             callback=lambda arg: pbar.update(1))
     pool.close()
     pool.join()
@@ -358,6 +368,9 @@ def main():
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
     parser.add_argument('--num_process_per_gpu', type=int, default=1)
+    parser.add_argument('-g', '--gpu-id', type=int, default=None, help='gpu device to use (default=None)')
+    parser.add_argument('--device', type=str, default=None, help='device to use. Default: None')
+    parser.add_argument('--debug', action='store_true', help='synchronize CUDA for debugging')
 
     parser.add_argument(
         '--alpha_upsampler',
