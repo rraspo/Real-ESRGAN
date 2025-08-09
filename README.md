@@ -232,6 +232,16 @@ python inference_realesrgan.py -n RealESRGAN_x4plus_anime_6B -i inputs
 
 Results are in the `results` folder
 
+#### Video inference
+
+Use `inference_realesrgan_video.py` for video inputs.
+
+```bash
+python inference_realesrgan_video.py -i input.mp4 --video_codec h264_nvenc --hwaccel cuda
+```
+
+`--video_codec` chooses the ffmpeg encoder (default `h264_nvenc`; it falls back to `libx264` if NVENC is unavailable). When a GPU codec is selected, `--hwaccel` passes the hardware acceleration backend such as `cuda` or `vulkan` to ffmpeg.
+
 ---
 
 ## BibTeX
