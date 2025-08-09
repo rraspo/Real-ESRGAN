@@ -87,7 +87,8 @@ Other recommended projects:<br>
 ## 🔧 Dependencies and Installation
 
 - Python >= 3.7 (Recommend to use [Anaconda](https://www.anaconda.com/download/#linux) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html))
-- [PyTorch >= 1.7](https://pytorch.org/)
+- [PyTorch >= 2.1](https://pytorch.org/)
+- NVIDIA CUDA >= 12.0 runtime and drivers, or a compatible Vulkan runtime for the ncnn backend
 
 ### Installation
 
