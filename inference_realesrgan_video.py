@@ -65,8 +65,11 @@ class Reader:
         self.input_fps = None
         if self.input_type.startswith('video'):
             video_path = get_sub_video(args, total_workers, worker_idx)
+            reader_kwargs = {}
+            if args.hwaccel is not None:
+                reader_kwargs['hwaccel'] = args.hwaccel
             self.stream_reader = (
-                ffmpeg.input(video_path).output('pipe:', format='rawvideo', pix_fmt='bgr24',
+                ffmpeg.input(video_path, **reader_kwargs).output('pipe:', format='rawvideo', pix_fmt='bgr24',
                                                 loglevel='error').run_async(
                                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
             meta = get_video_meta_info(video_path)
@@ -136,30 +139,43 @@ class Reader:
 
 class Writer:
 
-    def __init__(self, args, audio, height, width, video_save_path, fps):
+    def __init__(self,
+                 args,
+                 audio,
+                 height,
+                 width,
+                 video_save_path,
+                 fps,
+                 vcodec='libx264',
+                 hwaccel=None):
         out_width, out_height = int(width * args.outscale), int(height * args.outscale)
         if out_height > 2160:
             print('You are generating video that is larger than 4K, which will be very slow due to IO speed.',
                   'We highly recommend to decrease the outscale(aka, -s).')
 
+        input_kwargs = dict(format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}', framerate=fps)
+        if hwaccel is not None:
+            input_kwargs['hwaccel'] = hwaccel
+        stream = ffmpeg.input('pipe:', **input_kwargs)
+
         if audio is not None:
             self.stream_writer = (
-                ffmpeg.input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}',
-                             framerate=fps).output(
-                                 audio,
-                                 video_save_path,
-                                 pix_fmt='yuv420p',
-                                 vcodec='libx264',
-                                 loglevel='error',
-                                 acodec='copy').overwrite_output().run_async(
-                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
+                stream.output(
+                    audio,
+                    video_save_path,
+                    pix_fmt='yuv420p',
+                    vcodec=vcodec,
+                    loglevel='error',
+                    acodec='copy').overwrite_output().run_async(
+                        pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
         else:
             self.stream_writer = (
-                ffmpeg.input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}',
-                             framerate=fps).output(
-                                 video_save_path, pix_fmt='yuv420p', vcodec='libx264',
-                                 loglevel='error').overwrite_output().run_async(
-                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
+                stream.output(
+                    video_save_path,
+                    pix_fmt='yuv420p',
+                    vcodec=vcodec,
+                    loglevel='error').overwrite_output().run_async(
+                        pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
 
     def write_frame(self, frame):
         frame = frame.astype(np.uint8).tobytes()
@@ -250,7 +266,7 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
     audio = reader.get_audio()
     height, width = reader.get_resolution()
     fps = reader.get_fps()
-    writer = Writer(args, audio, height, width, video_save_path, fps)
+    writer = Writer(args, audio, height, width, video_save_path, fps, args.vcodec, args.hwaccel)
 
     pbar = tqdm(total=len(reader), unit='frame', desc='inference')
     while True:
@@ -358,6 +374,8 @@ def main():
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
     parser.add_argument('--num_process_per_gpu', type=int, default=1)
+    parser.add_argument('--hwaccel', type=str, default=None, help='ffmpeg hardware acceleration for decoding, e.g., cuda')
+    parser.add_argument('--vcodec', type=str, default='libx264', help='Output video codec, e.g., h264_nvenc')
 
     parser.add_argument(
         '--alpha_upsampler',
