@@ -1,6 +1,7 @@
 import argparse
 import cv2
 import glob
+import math
 import mimetypes
 import numpy as np
 import os
@@ -13,7 +14,7 @@ from basicsr.utils.download_util import load_file_from_url
 from os import path as osp
 from tqdm import tqdm
 
-from realesrgan import RealESRGANer
+from realesrgan import RealESRGANer, get_free_gpu_memory
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
 try:
@@ -244,7 +245,7 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         model_path=model_path,
         dni_weight=dni_weight,
         model=model,
-        tile=args.tile,
+        tile=0 if args.tile is None else args.tile,
         tile_pad=args.tile_pad,
         pre_pad=args.pre_pad,
         half=not (args.fp32 or args.bf16),
@@ -272,6 +273,13 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
     reader = Reader(args, total_workers, worker_idx)
     audio = reader.get_audio()
     height, width = reader.get_resolution()
+    if args.tile is None:
+        free_mem = get_free_gpu_memory(device.index if device else None)
+        bytes_per_pixel = (4 if args.fp32 else 2) * 3 * (netscale ** 2 + 1)
+        tile_size = int(math.sqrt(free_mem * 0.8 / bytes_per_pixel))
+        upsampler.tile_size = 0 if tile_size >= max(height, width) else tile_size
+    else:
+        upsampler.tile_size = args.tile
     fps = reader.get_fps()
     writer = Writer(args, audio, height, width, video_save_path, fps, args.vcodec, args.hwaccel)
 
@@ -383,7 +391,13 @@ def main():
     parser.add_argument(
         '--model_path', type=str, default=None, help='[Option] Model path. Usually, you do not need to specify it')
     parser.add_argument('--suffix', type=str, default='out', help='Suffix of the restored video')
-    parser.add_argument('-t', '--tile', type=int, default=0, help='Tile size, 0 for no tile during testing')
+    parser.add_argument(
+        '-t',
+        '--tile',
+        type=int,
+        default=None,
+        help=('Tile size. Automatically set to fit VRAM when not specified. '
+              'Use 0 to disable tiling'))
     parser.add_argument('--tile_pad', type=int, default=10, help='Tile padding')
     parser.add_argument('--pre_pad', type=int, default=0, help='Pre padding size at each border')
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
