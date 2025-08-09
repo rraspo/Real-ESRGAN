@@ -1,26 +1,30 @@
 import argparse
 import cv2
 import glob
+import math
 import mimetypes
 import numpy as np
 import os
 import shutil
 import subprocess
+import sys
 import torch
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
 from os import path as osp
 from tqdm import tqdm
 
-from realesrgan import RealESRGANer
+from realesrgan import RealESRGANer, get_free_gpu_memory
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
+
 
 try:
     import ffmpeg
 except ImportError:
-    import pip
-    pip.main(['install', '--user', 'ffmpeg-python'])
-    import ffmpeg
+    raise ImportError(
+        'ffmpeg-python is required. Install it with "pip install ffmpeg-python" '
+        'or run `subprocess.run([sys.executable, "-m", "pip", "install", "ffmpeg-python"])`.'
+    )
 
 
 def get_video_meta_info(video_path):
@@ -153,7 +157,15 @@ class Reader:
 
 class Writer:
 
-    def __init__(self, args, audio, height, width, video_save_path, fps):
+    def __init__(self,
+                 args,
+                 audio,
+                 height,
+                 width,
+                 video_save_path,
+                 fps,
+                 vcodec='libx264',
+                 hwaccel=None):
         out_width, out_height = int(width * args.outscale), int(height * args.outscale)
         if out_height > 2160:
             print('You are generating video that is larger than 4K, which will be very slow due to IO speed.',
@@ -233,13 +245,16 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         ]
 
     # ---------------------- determine model paths ---------------------- #
-    model_path = os.path.join('weights', args.model_name + '.pth')
-    if not os.path.isfile(model_path):
-        ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-        for url in file_url:
-            # model_path will be updated
-            model_path = load_file_from_url(
-                url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+    if args.model_path is not None:
+        model_path = args.model_path
+    else:
+        model_path = os.path.join('weights', args.model_name + '.pth')
+        if not os.path.isfile(model_path):
+            ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+            for url in file_url:
+                # model_path will be updated
+                model_path = load_file_from_url(
+                    url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
 
     # use dni to control the denoise strength
     dni_weight = None
@@ -254,11 +269,13 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         model_path=model_path,
         dni_weight=dni_weight,
         model=model,
-        tile=args.tile,
+        tile=0 if args.tile is None else args.tile,
         tile_pad=args.tile_pad,
         pre_pad=args.pre_pad,
-        half=not args.fp32,
+        half=not (args.fp32 or args.bf16),
+        bf16=args.bf16,
         device=device,
+        gpu_id=args.gpu_id,
     )
 
     if 'anime' in args.model_name and args.face_enhance:
@@ -280,8 +297,15 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
     reader = Reader(args, total_workers, worker_idx)
     audio = reader.get_audio()
     height, width = reader.get_resolution()
+    if args.tile is None:
+        free_mem = get_free_gpu_memory(device.index if device else None)
+        bytes_per_pixel = (4 if args.fp32 else 2) * 3 * (netscale ** 2 + 1)
+        tile_size = int(math.sqrt(free_mem * 0.8 / bytes_per_pixel))
+        upsampler.tile_size = 0 if tile_size >= max(height, width) else tile_size
+    else:
+        upsampler.tile_size = args.tile
     fps = reader.get_fps()
-    writer = Writer(args, audio, height, width, video_save_path, fps)
+    writer = Writer(args, audio, height, width, video_save_path, fps, args.vcodec, args.hwaccel)
 
     pbar = tqdm(total=len(reader), unit='frame', desc='inference')
     while True:
@@ -293,14 +317,16 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
             if args.face_enhance:
                 _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
             else:
-                output, _ = upsampler.enhance(img, outscale=args.outscale)
+                output, _ = upsampler.enhance(
+                    img, outscale=args.outscale, alpha_upsampler=args.alpha_upsampler)
         except RuntimeError as error:
             print('Error', error)
             print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
         else:
             writer.write_frame(output)
 
-        torch.cuda.synchronize(device)
+        if args.debug and device is not None and device.type == 'cuda':
+            torch.cuda.synchronize(device)
         pbar.update(1)
 
     reader.close()
@@ -317,10 +343,17 @@ def run(args):
         os.system(f'ffmpeg -i {args.input} -qscale:v 1 -qmin 1 -qmax 1 -vsync 0  {tmp_frames_folder}/frame%08d.png')
         args.input = tmp_frames_folder
 
-    num_gpus = torch.cuda.device_count()
+    if args.device:
+        device = torch.device(args.device)
+    elif args.gpu_id is not None:
+        device = torch.device(f'cuda:{args.gpu_id}')
+    else:
+        device = None
+
+    num_gpus = 1 if device is not None else torch.cuda.device_count()
     num_process = num_gpus * args.num_process_per_gpu
     if num_process == 1:
-        inference_video(args, video_save_path)
+        inference_video(args, video_save_path, device=device)
         return
 
     ctx = torch.multiprocessing.get_context('spawn')
@@ -329,9 +362,10 @@ def run(args):
     pbar = tqdm(total=num_process, unit='sub_video', desc='inference')
     for i in range(num_process):
         sub_video_save_path = osp.join(args.output, f'{args.video_name}_out_tmp_videos', f'{i:03d}.mp4')
+        sub_device = device if device is not None else torch.device(i % num_gpus)
         pool.apply_async(
             inference_video,
-            args=(args, sub_video_save_path, torch.device(i % num_gpus), num_process, i),
+            args=(args, sub_video_save_path, sub_device, num_process, i),
             callback=lambda arg: pbar.update(1))
     pool.close()
     pool.join()
@@ -378,13 +412,23 @@ def main():
         help=('Denoise strength. 0 for weak denoise (keep noise), 1 for strong denoise ability. '
               'Only used for the realesr-general-x4v3 model'))
     parser.add_argument('-s', '--outscale', type=float, default=4, help='The final upsampling scale of the image')
+    parser.add_argument(
+        '--model_path', type=str, default=None, help='[Option] Model path. Usually, you do not need to specify it')
     parser.add_argument('--suffix', type=str, default='out', help='Suffix of the restored video')
-    parser.add_argument('-t', '--tile', type=int, default=0, help='Tile size, 0 for no tile during testing')
+    parser.add_argument(
+        '-t',
+        '--tile',
+        type=int,
+        default=None,
+        help=('Tile size. Automatically set to fit VRAM when not specified. '
+              'Use 0 to disable tiling'))
     parser.add_argument('--tile_pad', type=int, default=10, help='Tile padding')
     parser.add_argument('--pre_pad', type=int, default=0, help='Pre padding size at each border')
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
+    parser.add_argument(
+        '--bf16', action='store_true', help='Use bfloat16 precision during inference. Default: fp16 (half precision).')
     parser.add_argument('--fps', type=float, default=None, help='FPS of the output video')
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
@@ -410,6 +454,8 @@ def main():
         type=str,
         default='auto',
         help='Image extension. Options: auto | jpg | png, auto means using the same extension as inputs')
+    parser.add_argument('-g', '--gpu-id', type=int, default=None,
+                        help='gpu device to use (default=None) can be 0,1,2 for multi-gpu')
     args = parser.parse_args()
 
     args.input = args.input.rstrip('/').rstrip('\\')
