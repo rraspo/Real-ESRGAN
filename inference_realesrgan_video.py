@@ -202,13 +202,16 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         ]
 
     # ---------------------- determine model paths ---------------------- #
-    model_path = os.path.join('weights', args.model_name + '.pth')
-    if not os.path.isfile(model_path):
-        ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-        for url in file_url:
-            # model_path will be updated
-            model_path = load_file_from_url(
-                url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+    if args.model_path is not None:
+        model_path = args.model_path
+    else:
+        model_path = os.path.join('weights', args.model_name + '.pth')
+        if not os.path.isfile(model_path):
+            ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+            for url in file_url:
+                # model_path will be updated
+                model_path = load_file_from_url(
+                    url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
 
     # use dni to control the denoise strength
     dni_weight = None
@@ -226,8 +229,10 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         tile=args.tile,
         tile_pad=args.tile_pad,
         pre_pad=args.pre_pad,
-        half=not args.fp32,
+        half=not (args.fp32 or args.bf16),
+        bf16=args.bf16,
         device=device,
+        gpu_id=args.gpu_id,
     )
 
     if 'anime' in args.model_name and args.face_enhance:
@@ -262,7 +267,8 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
             if args.face_enhance:
                 _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
             else:
-                output, _ = upsampler.enhance(img, outscale=args.outscale)
+                output, _ = upsampler.enhance(
+                    img, outscale=args.outscale, alpha_upsampler=args.alpha_upsampler)
         except RuntimeError as error:
             print('Error', error)
             print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
@@ -347,6 +353,8 @@ def main():
         help=('Denoise strength. 0 for weak denoise (keep noise), 1 for strong denoise ability. '
               'Only used for the realesr-general-x4v3 model'))
     parser.add_argument('-s', '--outscale', type=float, default=4, help='The final upsampling scale of the image')
+    parser.add_argument(
+        '--model_path', type=str, default=None, help='[Option] Model path. Usually, you do not need to specify it')
     parser.add_argument('--suffix', type=str, default='out', help='Suffix of the restored video')
     parser.add_argument('-t', '--tile', type=int, default=0, help='Tile size, 0 for no tile during testing')
     parser.add_argument('--tile_pad', type=int, default=10, help='Tile padding')
@@ -354,6 +362,8 @@ def main():
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
+    parser.add_argument(
+        '--bf16', action='store_true', help='Use bfloat16 precision during inference. Default: fp16 (half precision).')
     parser.add_argument('--fps', type=float, default=None, help='FPS of the output video')
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
@@ -369,6 +379,8 @@ def main():
         type=str,
         default='auto',
         help='Image extension. Options: auto | jpg | png, auto means using the same extension as inputs')
+    parser.add_argument('-g', '--gpu-id', type=int, default=None,
+                        help='gpu device to use (default=None) can be 0,1,2 for multi-gpu')
     args = parser.parse_args()
 
     args.input = args.input.rstrip('/').rstrip('\\')
