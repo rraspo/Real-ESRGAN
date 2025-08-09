@@ -54,6 +54,20 @@ def get_sub_video(args, num_process, process_idx):
     return out_path
 
 
+def check_encoder(codec, ffmpeg_bin='ffmpeg'):
+    """Check whether a specific ffmpeg encoder exists."""
+    try:
+        subprocess.run(
+            [ffmpeg_bin, '-hide_banner', '-h', f'encoder={codec}'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 class Reader:
 
     def __init__(self, args, total_workers=1, worker_idx=0):
@@ -65,8 +79,11 @@ class Reader:
         self.input_fps = None
         if self.input_type.startswith('video'):
             video_path = get_sub_video(args, total_workers, worker_idx)
+            input_kwargs = {}
+            if args.hwaccel and ('nvenc' in args.video_codec or 'vulkan' in args.video_codec):
+                input_kwargs['hwaccel'] = args.hwaccel
             self.stream_reader = (
-                ffmpeg.input(video_path).output('pipe:', format='rawvideo', pix_fmt='bgr24',
+                ffmpeg.input(video_path, **input_kwargs).output('pipe:', format='rawvideo', pix_fmt='bgr24',
                                                 loglevel='error').run_async(
                                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
             meta = get_video_meta_info(video_path)
@@ -142,24 +159,38 @@ class Writer:
             print('You are generating video that is larger than 4K, which will be very slow due to IO speed.',
                   'We highly recommend to decrease the outscale(aka, -s).')
 
+        codec = args.video_codec
+        if 'nvenc' in codec and not check_encoder(codec, args.ffmpeg_bin):
+            print(f'{codec} is not available. Falling back to libx264.')
+            codec = 'libx264'
+
+        input_kwargs = {
+            'format': 'rawvideo',
+            'pix_fmt': 'bgr24',
+            's': f'{out_width}x{out_height}',
+            'framerate': fps
+        }
+        if ('nvenc' in codec or 'vulkan' in codec) and args.hwaccel:
+            input_kwargs['hwaccel'] = args.hwaccel
+
         if audio is not None:
             self.stream_writer = (
-                ffmpeg.input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}',
-                             framerate=fps).output(
-                                 audio,
-                                 video_save_path,
-                                 pix_fmt='yuv420p',
-                                 vcodec='libx264',
-                                 loglevel='error',
-                                 acodec='copy').overwrite_output().run_async(
-                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
+                ffmpeg.input('pipe:', **input_kwargs).output(
+                    audio,
+                    video_save_path,
+                    pix_fmt='yuv420p',
+                    vcodec=codec,
+                    loglevel='error',
+                    acodec='copy').overwrite_output().run_async(
+                        pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
         else:
             self.stream_writer = (
-                ffmpeg.input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}',
-                             framerate=fps).output(
-                                 video_save_path, pix_fmt='yuv420p', vcodec='libx264',
-                                 loglevel='error').overwrite_output().run_async(
-                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
+                ffmpeg.input('pipe:', **input_kwargs).output(
+                    video_save_path,
+                    pix_fmt='yuv420p',
+                    vcodec=codec,
+                    loglevel='error').overwrite_output().run_async(
+                        pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
 
     def write_frame(self, frame):
         frame = frame.astype(np.uint8).tobytes()
@@ -358,6 +389,16 @@ def main():
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
     parser.add_argument('--num_process_per_gpu', type=int, default=1)
+    parser.add_argument(
+        '--video_codec',
+        type=str,
+        default='h264_nvenc',
+        help='Video codec for ffmpeg. Default: h264_nvenc. Falls back to libx264 if unavailable.')
+    parser.add_argument(
+        '--hwaccel',
+        type=str,
+        default=None,
+        help='Hardware acceleration for ffmpeg input when using GPU codecs, e.g., cuda or vulkan')
 
     parser.add_argument(
         '--alpha_upsampler',
