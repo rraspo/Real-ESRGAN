@@ -58,6 +58,36 @@ def get_sub_video(args, num_process, process_idx):
     return out_path
 
 
+def auto_tile_size(h, w, scale, tile_pad, max_mem_ratio=0.9, fp32=False, device=None):
+    """Automatically derive a tile size that fits into available GPU memory.
+
+    Args:
+        h (int): input height.
+        w (int): input width.
+        scale (int): upsampling scale of the model.
+        tile_pad (int): padding used for each tile.
+        max_mem_ratio (float): fraction of free VRAM to use.
+        fp32 (bool): whether inference uses fp32 precision.
+        device (torch.device, optional): device to query memory information.
+    Returns:
+        int: tile size in pixels. 0 indicates that no tiling is required.
+    """
+    if not torch.cuda.is_available():
+        return 0
+    try:
+        dev = device if device is not None else torch.cuda.current_device()
+        free_mem, _ = torch.cuda.mem_get_info(dev)
+    except Exception:
+        return 0
+    max_mem = int(free_mem * max_mem_ratio)
+    bytes_per_elem = 4 if fp32 else 2
+    # rough estimation: input + output tensors
+    bytes_per_pixel = bytes_per_elem * 3 * (scale ** 2 + 1)
+    tile = int(math.sqrt(max_mem / bytes_per_pixel)) - 2 * tile_pad
+    tile = min(tile, h, w)
+    return max(tile, 0)
+  
+  
 def check_encoder(codec, ffmpeg_bin='ffmpeg'):
     """Check whether a specific ffmpeg encoder exists."""
     try:
@@ -71,7 +101,7 @@ def check_encoder(codec, ffmpeg_bin='ffmpeg'):
     except subprocess.CalledProcessError:
         return False
 
-
+      
 class Reader:
 
     def __init__(self, args, total_workers=1, worker_idx=0):
@@ -263,6 +293,16 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         model_path = [model_path, wdn_model_path]
         dni_weight = [args.denoise_strength, 1 - args.denoise_strength]
 
+    reader = Reader(args, total_workers, worker_idx)
+    height, width = reader.get_resolution()
+    fps = reader.get_fps()
+    audio = reader.get_audio()
+
+    if args.tile == 0:
+        args.tile = auto_tile_size(height, width, netscale, args.tile_pad, args.max_mem_ratio, args.fp32, device)
+        if args.tile:
+            print(f'Auto tile size: {args.tile}')
+
     # restorer
     upsampler = RealESRGANer(
         scale=netscale,
@@ -294,6 +334,7 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
     else:
         face_enhancer = None
 
+
     reader = Reader(args, total_workers, worker_idx)
     audio = reader.get_audio()
     height, width = reader.get_resolution()
@@ -306,6 +347,7 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         upsampler.tile_size = args.tile
     fps = reader.get_fps()
     writer = Writer(args, audio, height, width, video_save_path, fps, args.vcodec, args.hwaccel)
+    
 
     pbar = tqdm(total=len(reader), unit='frame', desc='inference')
     while True:
@@ -424,6 +466,11 @@ def main():
               'Use 0 to disable tiling'))
     parser.add_argument('--tile_pad', type=int, default=10, help='Tile padding')
     parser.add_argument('--pre_pad', type=int, default=0, help='Pre padding size at each border')
+    parser.add_argument(
+        '--max_mem_ratio',
+        type=float,
+        default=0.9,
+        help='Upper bound of GPU memory usage for auto tile size computation')
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
