@@ -6,6 +6,7 @@ import numpy as np
 import os
 import shutil
 import subprocess
+import sys
 import torch
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
@@ -18,9 +19,10 @@ from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 try:
     import ffmpeg
 except ImportError:
-    import pip
-    pip.main(['install', '--user', 'ffmpeg-python'])
-    import ffmpeg
+    raise ImportError(
+        'ffmpeg-python is required. Install it with "pip install ffmpeg-python" '
+        'or run `subprocess.run([sys.executable, "-m", "pip", "install", "ffmpeg-python"])`.'
+    )
 
 
 def get_video_meta_info(video_path):
