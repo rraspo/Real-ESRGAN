@@ -191,8 +191,11 @@ A common command: python inference_realesrgan.py -n RealESRGAN_x4plus -i infile 
   -t, --tile           Tile size, 0 for no tile during testing. Default: 0
   --face_enhance       Whether to use GFPGAN to enhance face. Default: False
   --fp32               Use fp32 precision during inference. Default: fp16 (half precision).
+  --compile            Compile the model with torch.compile for faster inference. Default: False
   --ext                Image extension. Options: auto | jpg | png, auto means using the same extension as inputs. Default: auto
 ```
+
+See [docs/benchmark.md](docs/benchmark.md) for 4K RTX 4090 performance numbers.
 
 #### Inference general images
 

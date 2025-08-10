@@ -230,6 +230,9 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         device=device,
     )
 
+    if args.compile:
+        upsampler.model = torch.compile(upsampler.model)
+
     if 'anime' in args.model_name and args.face_enhance:
         print('face_enhance is not supported in anime models, we turned this option off for you. '
               'if you insist on turning it on, please manually comment the relevant lines of code.')
@@ -253,24 +256,25 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
     writer = Writer(args, audio, height, width, video_save_path, fps)
 
     pbar = tqdm(total=len(reader), unit='frame', desc='inference')
-    while True:
-        img = reader.get_frame()
-        if img is None:
-            break
+    with torch.inference_mode():
+        while True:
+            img = reader.get_frame()
+            if img is None:
+                break
 
-        try:
-            if args.face_enhance:
-                _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+            try:
+                if args.face_enhance:
+                    _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+                else:
+                    output, _ = upsampler.enhance(img, outscale=args.outscale)
+            except RuntimeError as error:
+                print('Error', error)
+                print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
             else:
-                output, _ = upsampler.enhance(img, outscale=args.outscale)
-        except RuntimeError as error:
-            print('Error', error)
-            print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
-        else:
-            writer.write_frame(output)
+                writer.write_frame(output)
 
-        torch.cuda.synchronize(device)
-        pbar.update(1)
+            torch.cuda.synchronize(device)
+            pbar.update(1)
 
     reader.close()
     writer.close()
@@ -354,6 +358,7 @@ def main():
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
+    parser.add_argument('--compile', action='store_true', help='Compile model with torch.compile for faster inference')
     parser.add_argument('--fps', type=float, default=None, help='FPS of the output video')
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
