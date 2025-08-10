@@ -318,6 +318,9 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
         gpu_id=args.gpu_id,
     )
 
+    if args.compile:
+        upsampler.model = torch.compile(upsampler.model)
+
     if 'anime' in args.model_name and args.face_enhance:
         print('face_enhance is not supported in anime models, we turned this option off for you. '
               'if you insist on turning it on, please manually comment the relevant lines of code.')
@@ -366,7 +369,6 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
                 print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
             else:
                 writer.write_frame(output)
-
             if args.debug:
                 torch.cuda.synchronize(device)
             pbar.update(1)
@@ -485,6 +487,7 @@ def main():
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
+    parser.add_argument('--compile', action='store_true', help='Compile model with torch.compile for faster inference')
     parser.add_argument(
         '--bf16', action='store_true', help='Use bfloat16 precision during inference. Default: fp16 (half precision).')
     parser.add_argument('--fps', type=float, default=None, help='FPS of the output video')

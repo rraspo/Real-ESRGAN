@@ -46,6 +46,7 @@ def main():
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
+    parser.add_argument('--compile', action='store_true', help='Compile model with torch.compile for faster inference')
     parser.add_argument(
         '--alpha_upsampler',
         type=str,
@@ -121,6 +122,9 @@ def main():
         pre_pad=args.pre_pad,
         half=not args.fp32,
         gpu_id=args.gpu_id)
+
+    if args.compile:
+        upsampler.model = torch.compile(upsampler.model)
 
     if args.face_enhance:  # Use GFPGAN for face enhancement
         from gfpgan import GFPGANer
