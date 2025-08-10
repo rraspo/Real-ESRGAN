@@ -395,7 +395,27 @@ def run(args):
     if args.extract_frame_first:
         tmp_frames_folder = osp.join(args.output, f'{args.video_name}_inp_tmp_frames')
         os.makedirs(tmp_frames_folder, exist_ok=True)
-        os.system(f'ffmpeg -i {args.input} -qscale:v 1 -qmin 1 -qmax 1 -vsync 0  {tmp_frames_folder}/frame%08d.png')
+        frame_pattern = osp.join(tmp_frames_folder, 'frame%08d.png')
+        try:
+            subprocess.run(
+                [
+                    'ffmpeg',
+                    '-i',
+                    args.input,
+                    '-qscale:v',
+                    '1',
+                    '-qmin',
+                    '1',
+                    '-qmax',
+                    '1',
+                    '-vsync',
+                    '0',
+                    frame_pattern,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError('FFmpeg failed to extract frames') from e
         args.input = tmp_frames_folder
 
     if args.device:
@@ -530,7 +550,13 @@ def main():
 
     if is_video and args.input.endswith('.flv'):
         mp4_path = args.input.replace('.flv', '.mp4')
-        os.system(f'ffmpeg -i {args.input} -codec copy {mp4_path}')
+        try:
+            subprocess.run(
+                ['ffmpeg', '-i', args.input, '-codec', 'copy', mp4_path],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError('FFmpeg failed to convert FLV to MP4') from e
         args.input = mp4_path
 
     if args.extract_frame_first and not is_video:
