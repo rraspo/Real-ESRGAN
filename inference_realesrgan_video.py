@@ -350,15 +350,26 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
     
 
     pbar = tqdm(total=len(reader), unit='frame', desc='inference')
-    while True:
-        img = reader.get_frame()
-        if img is None:
-            break
+    with torch.inference_mode():
+        while True:
+            img = reader.get_frame()
+            if img is None:
+                break
 
-        try:
-            if args.face_enhance:
-                _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+            try:
+                if args.face_enhance:
+                    _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+                else:
+                    output, _ = upsampler.enhance(img, outscale=args.outscale)
+            except RuntimeError as error:
+                print('Error', error)
+                print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
             else:
+                writer.write_frame(output)
+
+            if args.debug:
+                torch.cuda.synchronize(device)
+            pbar.update(1)
                 output, _ = upsampler.enhance(
                     img, outscale=args.outscale, alpha_upsampler=args.alpha_upsampler)
         except RuntimeError as error:
@@ -480,6 +491,7 @@ def main():
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
     parser.add_argument('--num_process_per_gpu', type=int, default=1)
+    parser.add_argument('--debug', action='store_true', help='Enable explicit CUDA synchronization for debugging')
     parser.add_argument(
         '--video_codec',
         type=str,
