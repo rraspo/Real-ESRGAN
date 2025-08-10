@@ -32,6 +32,14 @@ The following are some demos (best view in the full screen mode).
 
 ### PyTorch Inference
 
+Before running the following commands, make sure that **ffmpeg** and the Python binding
+`ffmpeg-python` are installed on your system. On Ubuntu you can install them with:
+
+```bash
+sudo apt-get install ffmpeg
+pip install ffmpeg-python
+```
+
 ```bash
 # download model
 wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth -P weights
@@ -41,6 +49,8 @@ CUDA_VISIBLE_DEVICES=0 python inference_realesrgan_video.py -i inputs/video/onep
 CUDA_VISIBLE_DEVICES=0 python inference_realesrgan_video.py -i inputs/video/onepiece_demo.mp4 -n realesr-animevideov3 -s 2 --suffix outx2 --num_process_per_gpu 2
 # multi gpu and multi process inference
 CUDA_VISIBLE_DEVICES=0,1,2,3 python inference_realesrgan_video.py -i inputs/video/onepiece_demo.mp4 -n realesr-animevideov3 -s 2 --suffix outx2 --num_process_per_gpu 2
+# enable torch.compile for faster inference
+CUDA_VISIBLE_DEVICES=0 python inference_realesrgan_video.py -i inputs/video/onepiece_demo.mp4 -n realesr-animevideov3 -s 2 --suffix outx2 --compile
 ```
 
 ```console
@@ -50,6 +60,9 @@ Usage:
                          this issue, you can use multi-processing by setting this parameter. As long as it
                          does not exceed the CUDA memory
 --extract_frame_first    If you encounter ffmpeg error when using multi-processing, you can turn this option on.
+--model_path             [Option] Model path. Usually, you do not need to specify it.
+--alpha_upsampler        The upsampler for the alpha channels. Options: realesrgan | bicubic.
+--bf16                   Use bfloat16 precision during inference. Default: fp16 (half precision).
 ```
 
 ### NCNN Executable File

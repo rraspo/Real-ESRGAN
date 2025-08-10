@@ -1,26 +1,30 @@
 import argparse
 import cv2
 import glob
+import math
 import mimetypes
 import numpy as np
 import os
 import shutil
 import subprocess
+import sys
 import torch
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
 from os import path as osp
 from tqdm import tqdm
 
-from realesrgan import RealESRGANer
+from realesrgan import RealESRGANer, get_free_gpu_memory
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
+
 
 try:
     import ffmpeg
 except ImportError:
-    import pip
-    pip.main(['install', '--user', 'ffmpeg-python'])
-    import ffmpeg
+    raise ImportError(
+        'ffmpeg-python is required. Install it with "pip install ffmpeg-python" '
+        'or run `subprocess.run([sys.executable, "-m", "pip", "install", "ffmpeg-python"])`.'
+    )
 
 
 def get_video_meta_info(video_path):
@@ -54,6 +58,50 @@ def get_sub_video(args, num_process, process_idx):
     return out_path
 
 
+def auto_tile_size(h, w, scale, tile_pad, max_mem_ratio=0.9, fp32=False, device=None):
+    """Automatically derive a tile size that fits into available GPU memory.
+
+    Args:
+        h (int): input height.
+        w (int): input width.
+        scale (int): upsampling scale of the model.
+        tile_pad (int): padding used for each tile.
+        max_mem_ratio (float): fraction of free VRAM to use.
+        fp32 (bool): whether inference uses fp32 precision.
+        device (torch.device, optional): device to query memory information.
+    Returns:
+        int: tile size in pixels. 0 indicates that no tiling is required.
+    """
+    if not torch.cuda.is_available():
+        return 0
+    try:
+        dev = device if device is not None else torch.cuda.current_device()
+        free_mem, _ = torch.cuda.mem_get_info(dev)
+    except Exception:
+        return 0
+    max_mem = int(free_mem * max_mem_ratio)
+    bytes_per_elem = 4 if fp32 else 2
+    # rough estimation: input + output tensors
+    bytes_per_pixel = bytes_per_elem * 3 * (scale ** 2 + 1)
+    tile = int(math.sqrt(max_mem / bytes_per_pixel)) - 2 * tile_pad
+    tile = min(tile, h, w)
+    return max(tile, 0)
+  
+  
+def check_encoder(codec, ffmpeg_bin='ffmpeg'):
+    """Check whether a specific ffmpeg encoder exists."""
+    try:
+        subprocess.run(
+            [ffmpeg_bin, '-hide_banner', '-h', f'encoder={codec}'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+      
 class Reader:
 
     def __init__(self, args, total_workers=1, worker_idx=0):
@@ -65,8 +113,11 @@ class Reader:
         self.input_fps = None
         if self.input_type.startswith('video'):
             video_path = get_sub_video(args, total_workers, worker_idx)
+            input_kwargs = {}
+            if args.hwaccel and ('nvenc' in args.video_codec or 'vulkan' in args.video_codec):
+                input_kwargs['hwaccel'] = args.hwaccel
             self.stream_reader = (
-                ffmpeg.input(video_path).output('pipe:', format='rawvideo', pix_fmt='bgr24',
+                ffmpeg.input(video_path, **input_kwargs).output('pipe:', format='rawvideo', pix_fmt='bgr24',
                                                 loglevel='error').run_async(
                                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
             meta = get_video_meta_info(video_path)
@@ -136,30 +187,52 @@ class Reader:
 
 class Writer:
 
-    def __init__(self, args, audio, height, width, video_save_path, fps):
+    def __init__(self,
+                 args,
+                 audio,
+                 height,
+                 width,
+                 video_save_path,
+                 fps,
+                 vcodec='libx264',
+                 hwaccel=None):
         out_width, out_height = int(width * args.outscale), int(height * args.outscale)
         if out_height > 2160:
             print('You are generating video that is larger than 4K, which will be very slow due to IO speed.',
                   'We highly recommend to decrease the outscale(aka, -s).')
 
+        codec = args.video_codec
+        if 'nvenc' in codec and not check_encoder(codec, args.ffmpeg_bin):
+            print(f'{codec} is not available. Falling back to libx264.')
+            codec = 'libx264'
+
+        input_kwargs = {
+            'format': 'rawvideo',
+            'pix_fmt': 'bgr24',
+            's': f'{out_width}x{out_height}',
+            'framerate': fps
+        }
+        if ('nvenc' in codec or 'vulkan' in codec) and args.hwaccel:
+            input_kwargs['hwaccel'] = args.hwaccel
+
         if audio is not None:
             self.stream_writer = (
-                ffmpeg.input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}',
-                             framerate=fps).output(
-                                 audio,
-                                 video_save_path,
-                                 pix_fmt='yuv420p',
-                                 vcodec='libx264',
-                                 loglevel='error',
-                                 acodec='copy').overwrite_output().run_async(
-                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
+                ffmpeg.input('pipe:', **input_kwargs).output(
+                    audio,
+                    video_save_path,
+                    pix_fmt='yuv420p',
+                    vcodec=codec,
+                    loglevel='error',
+                    acodec='copy').overwrite_output().run_async(
+                        pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
         else:
             self.stream_writer = (
-                ffmpeg.input('pipe:', format='rawvideo', pix_fmt='bgr24', s=f'{out_width}x{out_height}',
-                             framerate=fps).output(
-                                 video_save_path, pix_fmt='yuv420p', vcodec='libx264',
-                                 loglevel='error').overwrite_output().run_async(
-                                     pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
+                ffmpeg.input('pipe:', **input_kwargs).output(
+                    video_save_path,
+                    pix_fmt='yuv420p',
+                    vcodec=codec,
+                    loglevel='error').overwrite_output().run_async(
+                        pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
 
     def write_frame(self, frame):
         frame = frame.astype(np.uint8).tobytes()
@@ -221,8 +294,6 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
                 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth',
                 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth'
             ]
-
-        # ---------------------- determine model paths ---------------------- #
         model_path = os.path.join('weights', args.model_name + '.pth')
         if not os.path.isfile(model_path):
             ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -230,7 +301,6 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
                 # model_path will be updated
                 model_path = load_file_from_url(
                     url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
-
         # use dni to control the denoise strength
         dni_weight = None
         if args.model_name == 'realesr-general-x4v3' and args.denoise_strength != 1:
@@ -274,34 +344,50 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
             print('face_enhance is not supported for the Vulkan backend. Disabling.')
             args.face_enhance = False
 
+
     reader = Reader(args, total_workers, worker_idx)
     audio = reader.get_audio()
     height, width = reader.get_resolution()
+    if args.tile is None:
+        free_mem = get_free_gpu_memory(device.index if device else None)
+        bytes_per_pixel = (4 if args.fp32 else 2) * 3 * (netscale ** 2 + 1)
+        tile_size = int(math.sqrt(free_mem * 0.8 / bytes_per_pixel))
+        upsampler.tile_size = 0 if tile_size >= max(height, width) else tile_size
+    else:
+        upsampler.tile_size = args.tile
     fps = reader.get_fps()
-    writer = Writer(args, audio, height, width, video_save_path, fps)
+    writer = Writer(args, audio, height, width, video_save_path, fps, args.vcodec, args.hwaccel)
+    
 
     pbar = tqdm(total=len(reader), unit='frame', desc='inference')
-    while True:
-        img = reader.get_frame()
-        if img is None:
-            break
+    with torch.inference_mode():
+        while True:
+            img = reader.get_frame()
+            if img is None:
+                break
 
-        try:
-            if args.backend == 'cuda':
+            try:
                 if args.face_enhance:
-                    _, _, output = face_enhancer.enhance(
-                        img, has_aligned=False, only_center_face=False, paste_back=True)
+                    _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
                 else:
                     output, _ = upsampler.enhance(img, outscale=args.outscale)
+            except RuntimeError as error:
+                print('Error', error)
+                print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
             else:
-                output = _run_vulkan(args, img)
+                writer.write_frame(output)
+            if args.debug:
+                torch.cuda.synchronize(device)
+            pbar.update(1)
+                output, _ = upsampler.enhance(
+                    img, outscale=args.outscale, alpha_upsampler=args.alpha_upsampler)
         except RuntimeError as error:
             print('Error', error)
             print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
         else:
             writer.write_frame(output)
 
-        if args.backend == 'cuda' and device is not None:
+        if args.debug and device is not None and device.type == 'cuda':
             torch.cuda.synchronize(device)
         pbar.update(1)
 
@@ -316,13 +402,40 @@ def run(args):
     if args.extract_frame_first:
         tmp_frames_folder = osp.join(args.output, f'{args.video_name}_inp_tmp_frames')
         os.makedirs(tmp_frames_folder, exist_ok=True)
-        os.system(f'ffmpeg -i {args.input} -qscale:v 1 -qmin 1 -qmax 1 -vsync 0  {tmp_frames_folder}/frame%08d.png')
+        frame_pattern = osp.join(tmp_frames_folder, 'frame%08d.png')
+        try:
+            subprocess.run(
+                [
+                    'ffmpeg',
+                    '-i',
+                    args.input,
+                    '-qscale:v',
+                    '1',
+                    '-qmin',
+                    '1',
+                    '-qmax',
+                    '1',
+                    '-vsync',
+                    '0',
+                    frame_pattern,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError('FFmpeg failed to extract frames') from e
         args.input = tmp_frames_folder
 
-    num_gpus = torch.cuda.device_count() if args.backend == 'cuda' else 1
+    if args.device:
+        device = torch.device(args.device)
+    elif args.gpu_id is not None:
+        device = torch.device(f'cuda:{args.gpu_id}')
+    else:
+        device = None
+
+    num_gpus = 1 if device is not None else torch.cuda.device_count()
     num_process = num_gpus * args.num_process_per_gpu
     if num_process == 1:
-        inference_video(args, video_save_path)
+        inference_video(args, video_save_path, device=device)
         return
 
     ctx = torch.multiprocessing.get_context('spawn')
@@ -331,10 +444,11 @@ def run(args):
     pbar = tqdm(total=num_process, unit='sub_video', desc='inference')
     for i in range(num_process):
         sub_video_save_path = osp.join(args.output, f'{args.video_name}_out_tmp_videos', f'{i:03d}.mp4')
-        device_arg = torch.device(i % num_gpus) if args.backend == 'cuda' else None
+
+        sub_device = device if device is not None else torch.device(i % num_gpus)
         pool.apply_async(
             inference_video,
-            args=(args, sub_video_save_path, device_arg, num_process, i),
+            args=(args, sub_video_save_path, sub_device, num_process, i),
             callback=lambda arg: pbar.update(1))
     pool.close()
     pool.join()
@@ -381,13 +495,29 @@ def main():
         help=('Denoise strength. 0 for weak denoise (keep noise), 1 for strong denoise ability. '
               'Only used for the realesr-general-x4v3 model'))
     parser.add_argument('-s', '--outscale', type=float, default=4, help='The final upsampling scale of the image')
+    parser.add_argument(
+        '--model_path', type=str, default=None, help='[Option] Model path. Usually, you do not need to specify it')
     parser.add_argument('--suffix', type=str, default='out', help='Suffix of the restored video')
-    parser.add_argument('-t', '--tile', type=int, default=0, help='Tile size, 0 for no tile during testing')
+    parser.add_argument(
+        '-t',
+        '--tile',
+        type=int,
+        default=None,
+        help=('Tile size. Automatically set to fit VRAM when not specified. '
+              'Use 0 to disable tiling'))
     parser.add_argument('--tile_pad', type=int, default=10, help='Tile padding')
     parser.add_argument('--pre_pad', type=int, default=0, help='Pre padding size at each border')
+    parser.add_argument(
+        '--max_mem_ratio',
+        type=float,
+        default=0.9,
+        help='Upper bound of GPU memory usage for auto tile size computation')
     parser.add_argument('--face_enhance', action='store_true', help='Use GFPGAN to enhance face')
     parser.add_argument(
         '--fp32', action='store_true', help='Use fp32 precision during inference. Default: fp16 (half precision).')
+    parser.add_argument('--compile', action='store_true', help='Compile model with torch.compile for faster inference')
+    parser.add_argument(
+        '--bf16', action='store_true', help='Use bfloat16 precision during inference. Default: fp16 (half precision).')
     parser.add_argument('--fps', type=float, default=None, help='FPS of the output video')
     parser.add_argument('--ffmpeg_bin', type=str, default='ffmpeg', help='The path to ffmpeg')
     parser.add_argument('--extract_frame_first', action='store_true')
@@ -398,6 +528,17 @@ def main():
         default='cuda',
         choices=['cuda', 'vulkan'],
         help='Inference backend: cuda or vulkan (default: cuda)')
+    parser.add_argument('--debug', action='store_true', help='Enable explicit CUDA synchronization for debugging')
+    parser.add_argument(
+        '--video_codec',
+        type=str,
+        default='h264_nvenc',
+        help='Video codec for ffmpeg. Default: h264_nvenc. Falls back to libx264 if unavailable.')
+    parser.add_argument(
+        '--hwaccel',
+        type=str,
+        default=None,
+        help='Hardware acceleration for ffmpeg input when using GPU codecs, e.g., cuda or vulkan')
 
     parser.add_argument(
         '--alpha_upsampler',
@@ -409,6 +550,8 @@ def main():
         type=str,
         default='auto',
         help='Image extension. Options: auto | jpg | png, auto means using the same extension as inputs')
+    parser.add_argument('-g', '--gpu-id', type=int, default=None,
+                        help='gpu device to use (default=None) can be 0,1,2 for multi-gpu')
     args = parser.parse_args()
 
     args.input = args.input.rstrip('/').rstrip('\\')
@@ -421,7 +564,13 @@ def main():
 
     if is_video and args.input.endswith('.flv'):
         mp4_path = args.input.replace('.flv', '.mp4')
-        os.system(f'ffmpeg -i {args.input} -codec copy {mp4_path}')
+        try:
+            subprocess.run(
+                ['ffmpeg', '-i', args.input, '-codec', 'copy', mp4_path],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError('FFmpeg failed to convert FLV to MP4') from e
         args.input = mp4_path
 
     if args.extract_frame_first and not is_video:
